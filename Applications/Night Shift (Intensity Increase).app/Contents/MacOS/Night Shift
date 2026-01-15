@@ -1,0 +1,83 @@
+#!/bin/bash
+set -euo pipefail
+
+DOMAIN="com.interestinglythere.HardwareNightShift"
+STEP_SIZE=0.0625
+
+# Get current value from defaults (returns 0 if not set)
+get_value() {
+    defaults read "$DOMAIN" value 2>/dev/null || echo "0"
+}
+
+# Save value to defaults
+set_value() {
+    defaults write "$DOMAIN" value -float "$1"
+}
+
+# Convert value (0-1) to RGB gains: R=1.0, G=1.0-(0.6*v), B=1.0-(1.0*v)
+value_to_rgb() {
+    local v="$1"
+    local r=1.0
+    local g
+    local b
+    g=$(echo "1.0 - (0.6 * $v)" | bc -l)
+    b=$(echo "1.0 - (1.0 * $v)" | bc -l)
+    echo "$r $g $b"
+}
+
+# Apply the RGB gains to BetterDisplay
+apply_display() {
+    local r="$1"
+    local g="$2"
+    local b="$3"
+    open -g "BetterDisplay://set?redHardwareGain=$r&greenHardwareGain=$g&blueHardwareGain=$b"
+}
+
+# Toggle: flip sign of value
+toggle() {
+    local current
+    local new_value
+    current=$(get_value)
+    new_value=$(echo "-1 * $current" | bc -l)
+    set_value "$new_value"
+
+    # Apply display settings based on new state
+    if (( $(echo "$new_value >= 0" | bc -l) )); then
+        # Unmuted - apply the setting
+        read -r r g b <<< "$(value_to_rgb "$new_value")"
+        apply_display "$r" "$g" "$b"
+    else
+        # Muted - set to normal
+        apply_display 1.0 1.0 1.0
+    fi
+}
+
+# Adjust: takes +1 or -1, handles muted state and clamping
+adjust() {
+    local direction="$1"
+    local current
+    current=$(get_value)
+
+    # If muted (negative), restore to positive value
+    if (( $(echo "$current < 0" | bc -l) )); then
+        current=$(echo "-1 * $current" | bc -l)
+    else
+        # Otherwise adjust by step size
+        current=$(echo "$current + ($direction * $STEP_SIZE)" | bc -l)
+    fi
+
+    # Clamp between 0 and 1
+    if (( $(echo "$current < 0" | bc -l) )); then
+        current=0
+    elif (( $(echo "$current > 1" | bc -l) )); then
+        current=1
+    fi
+
+    set_value "$current"
+
+    # Apply display settings
+    read -r r g b <<< "$(value_to_rgb "$current")"
+    apply_display "$r" "$g" "$b"
+}
+
+adjust 1
